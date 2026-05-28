@@ -26,6 +26,56 @@ export class GeminiReviewer {
 	}
 
 	/**
+	 * Helper to execute generateContent with fallback models if a 503/high-demand error occurs.
+	 */
+	private async executeGenerateContent(contents: any, config: any, primaryModel: string): Promise<any> {
+		const fallbackModels = [primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+		// Filter out duplicates in case the configured model is already one of the fallbacks
+		const uniqueModels = Array.from(new Set(fallbackModels));
+
+		let lastError: any = null;
+
+		for (const model of uniqueModels) {
+			try {
+				if (model !== primaryModel) {
+					console.warn(`[Gemini API] Primary model '${primaryModel}' failed or overloaded. Falling back to alternative model '${model}'...`);
+				}
+
+				const response = await this.ai.models.generateContent({
+					model: model,
+					contents: contents,
+					config: config,
+				});
+
+				return response;
+			} catch (err: any) {
+				lastError = err;
+				const errString = String(err).toLowerCase();
+
+				// Match 503, unavailable, high demand, or resource exhausted errors
+				const is503OrUnavailable =
+					errString.includes('503') ||
+					errString.includes('unavailable') ||
+					errString.includes('high demand') ||
+					errString.includes('resource_exhausted') ||
+					errString.includes('exhausted');
+
+				if (is503OrUnavailable) {
+					console.warn(`[Gemini API] Model '${model}' experienced high demand or 503 unavailable status.`);
+					continue;
+				} else {
+					// Propagate immediately if it's not a service capacity error (e.g. auth, api key invalid, bad request)
+					throw err;
+				}
+			}
+		}
+
+		// If all models failed, throw the last capacity error
+		throw lastError;
+	}
+
+	/**
 	 * Reviews file diffs using the Gemini API against the guidelines.
 	 */
 	public async reviewDiffs(fileDiffs: FileDiff[]): Promise<ReviewComment[]> {
@@ -67,14 +117,14 @@ JSON Schema:
 		console.log('Sending changes to Gemini for review...');
 
 		try {
-			const response = await this.ai.models.generateContent({
-				model: this.config.geminiModel, // De-hardcoded: read from configuration model
-				contents: [{ role: 'user', parts: [{ text: diffsText }] }],
-				config: {
+			const response = await this.executeGenerateContent(
+				[{ role: 'user', parts: [{ text: diffsText }] }],
+				{
 					systemInstruction: systemInstruction,
 					responseMimeType: 'application/json',
 				},
-			});
+				this.config.geminiModel,
+			);
 
 			const responseText = response.text || '';
 
