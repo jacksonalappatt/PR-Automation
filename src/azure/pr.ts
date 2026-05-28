@@ -1,5 +1,13 @@
 import { IGitApi } from 'azure-devops-node-api/GitApi';
-import { GitPullRequest, PullRequestStatus, GitPullRequestCommentThread, CommentThreadStatus, Comment, CommentType } from 'azure-devops-node-api/interfaces/GitInterfaces';
+import {
+	GitPullRequest,
+	PullRequestStatus,
+	GitPullRequestCommentThread,
+	CommentThreadStatus,
+	Comment,
+	CommentType,
+	PullRequestAsyncStatus,
+} from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { AppConfig, ReviewComment } from '../models/types';
 
 /**
@@ -11,9 +19,10 @@ export function normalizePath(filePath: string): string {
 }
 
 /**
- * Resolves active non-draft PRs assigned to the current user in the repository.
+ * Resolves active non-draft PRs assigned to the current user or their teams in the repository,
+ * skipping any PRs that have been rejected or have merge conflicts.
  */
-export async function getAssignedPRs(gitApi: IGitApi, repoId: string, projectName: string, userUniqueName: string): Promise<GitPullRequest[]> {
+export async function getAssignedPRs(gitApi: IGitApi, repoId: string, projectName: string, userUniqueName: string, userTeamIds: string[]): Promise<GitPullRequest[]> {
 	console.log(`Fetching active PRs for repo '${repoId}'...`);
 
 	// Fetch active PRs in the repository
@@ -24,23 +33,45 @@ export async function getAssignedPRs(gitApi: IGitApi, repoId: string, projectNam
 		return [];
 	}
 
+	const lowercaseTeamIds = userTeamIds.map((id) => id.toLowerCase());
+
 	// Filter PRs that are:
 	// 1. Not draft (isDraft is false/undefined)
-	// 2. Assigned to the current user (user is listed as a reviewer)
+	// 2. Not rejected (no reviewer has cast a -10 vote)
+	// 3. Not conflicted (mergeStatus is not conflicts)
+	// 4. Assigned to the current user OR one of their teams (listed in reviewers)
 	const filteredPrs = prs.filter((pr) => {
 		if (pr.isDraft) return false;
 
-		// Check if current user is in the reviewers list
+		// Check if any reviewer has cast a reject vote (-10)
+		const isRejected = pr.reviewers?.some((reviewer) => reviewer.vote === -10);
+		if (isRejected) {
+			console.log(`[PR #${pr.pullRequestId}] Skipping because it has a 'Rejected' vote (-10) from a reviewer.`);
+			return false;
+		}
+
+		// Check if the PR has merge conflicts
+		if (pr.mergeStatus === PullRequestAsyncStatus.Conflicts) {
+			console.log(`[PR #${pr.pullRequestId}] Skipping because it has active merge conflicts.`);
+			return false;
+		}
+
+		// Check if current user or any of their teams is in the reviewers list
 		const isReviewer = pr.reviewers?.some((reviewer) => {
 			const uniqueName = reviewer.uniqueName || '';
 			const id = reviewer.id || '';
-			return uniqueName.toLowerCase() === userUniqueName.toLowerCase() || id.toLowerCase() === userUniqueName.toLowerCase();
+
+			const isUser = uniqueName.toLowerCase() === userUniqueName.toLowerCase() || id.toLowerCase() === userUniqueName.toLowerCase();
+
+			const isTeam = lowercaseTeamIds.includes(id.toLowerCase());
+
+			return isUser || isTeam;
 		});
 
 		return isReviewer;
 	});
 
-	console.log(`Found ${filteredPrs.length} active, non-draft PRs assigned to user '${userUniqueName}'.`);
+	console.log(`Found ${filteredPrs.length} active, non-draft, non-rejected, conflict-free PRs assigned to user '${userUniqueName}' or their teams.`);
 	return filteredPrs;
 }
 

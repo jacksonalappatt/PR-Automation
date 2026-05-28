@@ -35,4 +35,21 @@ export class AzureClient {
 			uniqueName: user.uniqueName || user.id || '',
 		};
 	}
+
+	/**
+	 * Retrieves all teams the authenticated user belongs to in the project.
+	 */
+	public async getUserTeams(projectName: string): Promise<{ id: string; name: string }[]> {
+		try {
+			const coreApi = await this.connection.getCoreApi();
+			const teams = await coreApi.getTeams(projectName, true);
+			return (teams || []).map((team) => ({
+				id: team.id || '',
+				name: team.name || '',
+			}));
+		} catch (err) {
+			console.warn(`[Azure Client] Could not fetch user teams for project ${projectName}:`, err);
+			return [];
+		}
+	}
 }

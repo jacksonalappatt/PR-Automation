@@ -84,3 +84,35 @@ export function formatDiffForLlm(fileDiff: FileDiff): string {
 
 	return output;
 }
+
+/**
+ * Normalizes file paths to have a leading slash for consistent mapping.
+ */
+function normalizePath(filePath: string): string {
+	const trimmed = filePath.trim();
+	return trimmed.startsWith('/') ? trimmed : '/' + trimmed;
+}
+
+/**
+ * Returns a Map of normalized file paths to a Set of line numbers that were actually added/modified in the diffs.
+ */
+export function getModifiedLinesMap(fileDiffs: FileDiff[]): Map<string, Set<number>> {
+	const map = new Map<string, Set<number>>();
+
+	for (const fileDiff of fileDiffs) {
+		const normPath = normalizePath(fileDiff.filePath);
+		const modifiedLines = new Set<number>();
+
+		for (const hunk of fileDiff.hunks) {
+			for (const line of hunk.lines) {
+				if (line.type === 'added' && line.newLineNumber !== undefined) {
+					modifiedLines.add(line.newLineNumber);
+				}
+			}
+		}
+
+		map.set(normPath, modifiedLines);
+	}
+
+	return map;
+}
