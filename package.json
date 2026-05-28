@@ -1,0 +1,29 @@
+{
+  "name": "pr-automation",
+  "version": "1.0.0",
+  "description": "Automated Azure DevOps PR reviewer using Gemini API",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "test-compile": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@google/genai": "^2.6.0",
+    "azure-devops-node-api": "^14.0.0",
+    "diff": "^5.2.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.1",
+    "@types/node": "^20.11.24",
+    "@typescript-eslint/eslint-plugin": "^7.1.0",
+    "@typescript-eslint/parser": "^7.1.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
