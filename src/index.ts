@@ -2,7 +2,7 @@ import { loadConfig } from './config';
 import { AzureClient } from './azure/client';
 import { getAssignedPRs, postPRReviews, normalizePath } from './azure/pr';
 import { getPRDiffs } from './azure/diff';
-import { GeminiReviewer } from './llm/reviewer';
+import { LlmReviewer } from './llm/reviewer';
 import { getModifiedLinesMap } from './utils/diffHelper';
 
 async function main() {
@@ -15,7 +15,14 @@ async function main() {
 	console.log(`Organization URL: ${config.azureOrgUrl}`);
 	console.log(`Project Name:     ${config.azureProjectName}`);
 	console.log(`Repository:       ${config.azureRepositoryId}`);
-	console.log(`Gemini Model:     ${config.geminiModel}`);
+	console.log(`Active Provider:  ${config.llmProvider.toUpperCase()}`);
+	if (config.llmProvider === 'gemini') {
+		console.log(`Gemini Model:     ${config.geminiModel}`);
+	} else if (config.llmProvider === 'openai') {
+		console.log(`OpenAI Model:     ${config.openaiModel}`);
+	} else if (config.llmProvider === 'azure-openai') {
+		console.log(`Azure Deployment: ${config.azureOpenaiDeployment}`);
+	}
 	console.log(`Dry Run Mode:     ${config.dryRun ? 'ENABLED' : 'DISABLED'}`);
 	console.log(`Guidelines File:  ${config.guidelinesPath}`);
 
@@ -41,9 +48,9 @@ async function main() {
 			return;
 		}
 
-		// 4. Initialize Gemini Reviewer
-		console.log('Initializing Google Gemini AI Reviewer...');
-		const reviewer = new GeminiReviewer(config);
+		// 4. Initialize LLM Reviewer
+		console.log(`Initializing ${config.llmProvider.toUpperCase()} AI Reviewer...`);
+		const reviewer = new LlmReviewer(config);
 
 		// 5. Review each PR
 		for (const pr of assignedPrs) {
@@ -66,7 +73,7 @@ async function main() {
 
 				console.log(`[PR #${prId}] Found ${prDiffs.files.length} changed files to review.`);
 
-				// Ask Gemini to review the diffs against the guidelines
+				// Ask LLM to review the diffs against the guidelines
 				const suggestedReviews = await reviewer.reviewDiffs(prDiffs.files);
 
 				// STRICT FILTER: Only keep comments that strictly target lines added/modified in this PR

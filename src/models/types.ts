@@ -3,8 +3,18 @@ export interface AppConfig {
 	azureOrgUrl: string;
 	azureProjectName: string;
 	azureRepositoryId: string;
+
+	// LLM configurations
+	llmProvider: string; // 'gemini' | 'openai' | 'azure-openai'
 	geminiApiKey: string;
 	geminiModel: string;
+	openaiApiKey: string;
+	openaiModel: string;
+	azureOpenaiApiKey: string;
+	azureOpenaiEndpoint: string;
+	azureOpenaiDeployment: string;
+	azureOpenaiApiVersion: string;
+
 	guidelinesPath: string;
 	dryRun: boolean;
 	commentOffset: number;

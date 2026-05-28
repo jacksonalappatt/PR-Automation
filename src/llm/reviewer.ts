@@ -1,16 +1,33 @@
 import { GoogleGenAI } from '@google/genai';
+import OpenAI, { AzureOpenAI } from 'openai';
 import * as fs from 'fs';
 import { AppConfig, FileDiff, ReviewComment } from '../models/types';
 import { formatDiffForLlm } from '../utils/diffHelper';
 
-export class GeminiReviewer {
-	private ai: GoogleGenAI;
+export class LlmReviewer {
+	private geminiClient?: GoogleGenAI;
+	private openaiClient?: OpenAI;
+	private azureOpenaiClient?: AzureOpenAI;
+
 	private guidelines: string;
 	private config: AppConfig;
 
 	constructor(config: AppConfig) {
 		this.config = config;
-		this.ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+
+		// Initialize the appropriate client based on the configured provider
+		if (config.llmProvider === 'gemini') {
+			this.geminiClient = new GoogleGenAI({ apiKey: config.geminiApiKey });
+		} else if (config.llmProvider === 'openai') {
+			this.openaiClient = new OpenAI({ apiKey: config.openaiApiKey });
+		} else if (config.llmProvider === 'azure-openai') {
+			this.azureOpenaiClient = new AzureOpenAI({
+				apiKey: config.azureOpenaiApiKey,
+				endpoint: config.azureOpenaiEndpoint,
+				deployment: config.azureOpenaiDeployment,
+				apiVersion: config.azureOpenaiApiVersion,
+			});
+		}
 
 		// Load the guidelines file
 		try {
@@ -26,57 +43,7 @@ export class GeminiReviewer {
 	}
 
 	/**
-	 * Helper to execute generateContent with fallback models if a 503/high-demand error occurs.
-	 */
-	private async executeGenerateContent(contents: any, config: any, primaryModel: string): Promise<any> {
-		const fallbackModels = [primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash'];
-
-		// Filter out duplicates in case the configured model is already one of the fallbacks
-		const uniqueModels = Array.from(new Set(fallbackModels));
-
-		let lastError: any = null;
-
-		for (const model of uniqueModels) {
-			try {
-				if (model !== primaryModel) {
-					console.warn(`[Gemini API] Primary model '${primaryModel}' failed or overloaded. Falling back to alternative model '${model}'...`);
-				}
-
-				const response = await this.ai.models.generateContent({
-					model: model,
-					contents: contents,
-					config: config,
-				});
-
-				return response;
-			} catch (err: any) {
-				lastError = err;
-				const errString = String(err).toLowerCase();
-
-				// Match 503, unavailable, high demand, or resource exhausted errors
-				const is503OrUnavailable =
-					errString.includes('503') ||
-					errString.includes('unavailable') ||
-					errString.includes('high demand') ||
-					errString.includes('resource_exhausted') ||
-					errString.includes('exhausted');
-
-				if (is503OrUnavailable) {
-					console.warn(`[Gemini API] Model '${model}' experienced high demand or 503 unavailable status.`);
-					continue;
-				} else {
-					// Propagate immediately if it's not a service capacity error (e.g. auth, api key invalid, bad request)
-					throw err;
-				}
-			}
-		}
-
-		// If all models failed, throw the last capacity error
-		throw lastError;
-	}
-
-	/**
-	 * Reviews file diffs using the Gemini API against the guidelines.
+	 * Reviews file diffs using the configured LLM API against the guidelines.
 	 */
 	public async reviewDiffs(fileDiffs: FileDiff[]): Promise<ReviewComment[]> {
 		if (fileDiffs.length === 0) {
@@ -114,19 +81,20 @@ JSON Schema:
 ]
 `;
 
-		console.log('Sending changes to Gemini for review...');
+		console.log(`Sending changes to ${this.config.llmProvider.toUpperCase()} for review...`);
 
 		try {
-			const response = await this.executeGenerateContent(
-				[{ role: 'user', parts: [{ text: diffsText }] }],
-				{
-					systemInstruction: systemInstruction,
-					responseMimeType: 'application/json',
-				},
-				this.config.geminiModel,
-			);
+			let responseText = '';
 
-			const responseText = response.text || '';
+			if (this.config.llmProvider === 'gemini') {
+				responseText = await this.reviewWithGemini(diffsText, systemInstruction);
+			} else if (this.config.llmProvider === 'openai' && this.openaiClient) {
+				responseText = await this.reviewWithOpenAi(diffsText, systemInstruction);
+			} else if (this.config.llmProvider === 'azure-openai' && this.azureOpenaiClient) {
+				responseText = await this.reviewWithAzureOpenAi(diffsText, systemInstruction);
+			} else {
+				throw new Error(`LLM Client for provider '${this.config.llmProvider}' is not initialized.`);
+			}
 
 			// Clean up markdown block styling if the model ignored the raw output instruction
 			let cleanedJson = responseText.trim();
@@ -141,22 +109,108 @@ JSON Schema:
 			cleanedJson = cleanedJson.trim();
 
 			if (!cleanedJson) {
-				console.log('Gemini returned empty response.');
+				console.log('LLM returned empty response.');
 				return [];
 			}
 
 			const comments: ReviewComment[] = JSON.parse(cleanedJson);
 
 			if (!Array.isArray(comments)) {
-				console.error('Expected JSON array from Gemini, got:', cleanedJson);
+				console.error('Expected JSON array from LLM, got:', cleanedJson);
 				return [];
 			}
 
-			console.log(`Successfully received ${comments.length} review suggestions from Gemini.`);
+			console.log(`Successfully received ${comments.length} review suggestions from LLM.`);
 			return comments;
 		} catch (error) {
-			console.error('Error during Gemini API review execution:', error);
+			console.error(`Error during LLM API review execution (${this.config.llmProvider}):`, error);
 			return [];
 		}
+	}
+
+	/**
+	 * Private helper to execute reviews via Google Gemini with fallback handling.
+	 */
+	private async reviewWithGemini(diffsText: string, systemInstruction: string): Promise<string> {
+		if (!this.geminiClient) throw new Error('Gemini client not initialized.');
+
+		const fallbackModels = [this.config.geminiModel, 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+		const uniqueModels = Array.from(new Set(fallbackModels));
+		let lastError: any = null;
+
+		for (const model of uniqueModels) {
+			try {
+				if (model !== this.config.geminiModel) {
+					console.warn(`[Gemini API] Primary model '${this.config.geminiModel}' failed or overloaded. Falling back to alternative model '${model}'...`);
+				}
+
+				const response = await this.geminiClient.models.generateContent({
+					model: model,
+					contents: [{ role: 'user', parts: [{ text: diffsText }] }],
+					config: {
+						systemInstruction: systemInstruction,
+						responseMimeType: 'application/json',
+					},
+				});
+
+				return response.text || '';
+			} catch (err: any) {
+				lastError = err;
+				const errString = String(err).toLowerCase();
+
+				const is503OrUnavailable =
+					errString.includes('503') ||
+					errString.includes('unavailable') ||
+					errString.includes('high demand') ||
+					errString.includes('resource_exhausted') ||
+					errString.includes('exhausted');
+
+				if (is503OrUnavailable) {
+					console.warn(`[Gemini API] Model '${model}' experienced high demand or 503 unavailable status.`);
+					continue;
+				} else {
+					throw err;
+				}
+			}
+		}
+
+		throw lastError;
+	}
+
+	/**
+	 * Private helper to execute reviews via OpenAI.
+	 */
+	private async reviewWithOpenAi(diffsText: string, systemInstruction: string): Promise<string> {
+		if (!this.openaiClient) throw new Error('OpenAI client not initialized.');
+
+		const response = await this.openaiClient.chat.completions.create({
+			model: this.config.openaiModel,
+			messages: [
+				{ role: 'system', content: systemInstruction },
+				{ role: 'user', content: diffsText },
+			],
+			response_format: { type: 'json_object' },
+		});
+
+		return response.choices[0].message.content || '';
+	}
+
+	/**
+	 * Private helper to execute reviews via Azure OpenAI.
+	 */
+	private async reviewWithAzureOpenAi(diffsText: string, systemInstruction: string): Promise<string> {
+		if (!this.azureOpenaiClient) throw new Error('Azure OpenAI client not initialized.');
+
+		const response = await this.azureOpenaiClient.chat.completions.create({
+			messages: [
+				{ role: 'system', content: systemInstruction },
+				{ role: 'user', content: diffsText },
+			],
+			model: '', // Determined by your Azure deployment
+			response_format: { type: 'json_object' },
+		});
+
+		return response.choices[0].message.content || '';
 	}
 }
